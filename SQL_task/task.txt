@@ -1,0 +1,118 @@
+1. Создание таблиц
+
+-- Таблица Менеджеры
+CREATE TABLE managers (
+    manager_id INT PRIMARY KEY AUTO_INCREMENT, -- Уникальный идентификатор менеджера.
+    manager_name VARCHAR(255) NOT NULL         -- Имя менеджера.
+);
+
+-- Таблица Клиенты
+CREATE TABLE clients (
+    client_id INT PRIMARY KEY AUTO_INCREMENT,  -- Уникальный идентификатор клиента.
+    client_name VARCHAR(255) NOT NULL          -- Имя или название клиента (контрагента).
+);
+
+-- Таблица Счета
+CREATE TABLE invoices (
+    invoice_id INT PRIMARY KEY AUTO_INCREMENT,                      -- Уникальный идентификатор счета.
+    invoice_number VARCHAR(50) NOT NULL,                            -- Номер счета. Может перезапускаться с определенной даты.
+    issue_date DATE NOT NULL,                                       -- Дата выставления счета.
+    due_date DATE NOT NULL,                                         -- Дата оплаты счета.
+    client_id INT NOT NULL,                                         -- Внешний ключ на таблицу Клиенты.
+    manager_id INT NOT NULL,                                        -- Внешний ключ на таблицу Менеджеры.
+    amount DECIMAL(10, 2) NOT NULL,                                 -- Сумма счета.
+    currency VARCHAR(3) NOT NULL,                                   -- Валюта счета.
+    payment_status ENUM('неоплачен', 'частично оплачен', 'полностью оплачен') NOT NULL DEFAULT 'неоплачен', -- Статус оплаты счета.
+    shipment_status ENUM('не отгружен', 'частично отгружен', 'полностью отгружен') NOT NULL DEFAULT 'не отгружен', -- Статус отгрузки.
+    sequence_start_date DATE,                                       -- Дата начала последовательности для номера счета (если перезапускается).
+    external_system_id VARCHAR(255),                                -- Идентификатор счета во внешней бухгалтерской системе.
+    
+    FOREIGN KEY (client_id) REFERENCES clients(client_id),
+    FOREIGN KEY (manager_id) REFERENCES managers(manager_id)
+);
+
+-- Таблица для логирования синхронизаций счетов
+CREATE TABLE invoice_sync_log (
+    sync_id INT PRIMARY KEY AUTO_INCREMENT,                -- Уникальный идентификатор записи в логе.
+    invoice_id INT NOT NULL,                               -- Идентификатор счета.
+    sync_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,         -- Дата и время синхронизации.
+    payment_status_before ENUM('неоплачен', 'частично оплачен', 'полностью оплачен'), -- Статус оплаты до синхронизации.
+    payment_status_after ENUM('неоплачен', 'частично оплачен', 'полностью оплачен'),  -- Статус оплаты после синхронизации.
+    shipment_status_before ENUM('не отгружен', 'частично отгружен', 'полностью отгружен'), -- Статус отгрузки до синхронизации.
+    shipment_status_after ENUM('не отгружен', 'частично отгружен', 'полностью отгружен'),  -- Статус отгрузки после синхронизации.
+
+    FOREIGN KEY (invoice_id) REFERENCES invoices(invoice_id)
+);
+
+2. Индексы
+
+-- Индекс для получения последних счетов менеджера
+CREATE INDEX idx_manager_invoices ON invoices(manager_id, issue_date DESC);
+
+-- Индекс для поиска счетов по дате
+CREATE INDEX idx_invoice_date ON invoices(issue_date);
+
+-- Индекс для поиска счетов по клиенту
+CREATE INDEX idx_client_invoices ON invoices(client_id);
+
+-- Индекс для поиска счета по номеру с учетом последовательности
+CREATE INDEX idx_invoice_number_sequence ON invoices(invoice_number, sequence_start_date);
+
+-- Индекс для статусов оплаты и отгрузки (для синхронизации с внешней системой)
+CREATE INDEX idx_payment_shipment_status ON invoices(payment_status, shipment_status);
+
+-- Индекс для быстрого доступа к счетам по внешнему идентификатору
+CREATE INDEX idx_external_system ON invoices(external_system_id);
+
+3. Примеры запросов
+
+- Последние 20 счетов:
+  SELECT * FROM invoices
+  WHERE manager_id = :manager_id
+  ORDER BY issue_date DESC
+  LIMIT 20;
+
+- Поиск счетов за определенный период:
+  SELECT * FROM invoices
+  WHERE issue_date BETWEEN :start_date AND :end_date;
+
+- Поиск счетов по клиенту:
+  SELECT * FROM invoices
+  WHERE client_id = :client_id;
+
+- Поиск счета по номеру (с учетом повторяющейся нумерации):
+  SELECT * FROM invoices
+  WHERE invoice_number = :invoice_number
+  AND sequence_start_date <= :current_date;
+
+- Оплаченные, но не отгруженные счета:
+  SELECT * FROM invoices
+  WHERE payment_status = 'полностью оплачен'
+    AND shipment_status != 'полностью отгружен';
+
+- Отгруженные, но не оплаченные счета:
+  SELECT * FROM invoices
+  WHERE shipment_status = 'полностью отгружен'
+    AND payment_status != 'полностью оплачен';
+
+- Выборка счетов для синхронизации с внешней системой:
+  SELECT * FROM invoices
+  WHERE payment_status != :external_payment_status
+    OR shipment_status != :external_shipment_status;
+
+- Логирование синхронизации статусов:
+  INSERT INTO invoice_sync_log (invoice_id, payment_status_before, payment_status_after,
+  shipment_status_before, shipment_status_after)
+  VALUES (:invoice_id, :payment_status_before, :payment_status_after, :shipment_status_before, :shipment_status_after);
+
+4. Бонус уровень (описание)
+
+- Поле external_system_id - поле необходимо для хранения уникального идентификатора счета в бухгалтерской системе,
+используется для идентификации счета при обмене данными с внешней системой.
+
+- Индекс idx_external_system - индекс помогает ускорить поиск счетов по внешнему идентификатору (external_system_id).
+
+- Поля payment_status и shipment_status: присутствуют в структуре таблицы invoices, необходимы для хранения
+данных о статусах оплаты и отгрузки счета.
+
+- Таблица invoice_sync_log - таблица для отслеживания всех изменений статусов, ведения истории синхронизаций.
